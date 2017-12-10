@@ -1,0 +1,48 @@
+De quelles passes dispose t-on ?
+
+polymorphic type inference
+ .prérequis : unicité des ids
+ .assure : programme bien typé
+
+monomorphisation
+ .prérequis : polymorphic type inference, unicité des ids
+ .assure : programme monomorphique
+
+monomorphic type inference
+ .prérequis : monomorphisation
+ .assure : programme typé de façon monomorphe
+
+lambda-lifting
+ .prérequis : rien
+ .assure : programme lambda-lifté ...
+
+compilation du pattern matching
+ .prérequis : ne pas créer de matchs après
+ .assure : pattern matchings simples
+
+closure conversion (incomplet)
+ .prérequis : constructeur "__MAO_closure" déclaré
+ .assure : compilable vers un langage de premier ordre
+ 	   modifie le type des fonctions
+
+spécialisation des types de données
+  .prérequis :ne pas changer le type après
+  .assure : types qui collent à leurs contenus
+
+ordre :
+1) polymorphic type inference
+2) monomorphisation
+3) closure conversion
+4) lambda-lifting (extraire les fonctions closes de leurs trous respectifs et les nommer)
+5) pattern matching compilation
+6) monomorphic type inference 
+ . vérifier qu'on a pas fait (trop) de conneries
+ . préparer la spécialisation des types de donnée
+7) datatype specialization
+8) linéarisation du code (ANF)
+9) monomorphic type inference (préparer la génération de code)
+ . vérifier qu'on a pas fait (trop) de conneries
+ . préparer la génération de code avec LLVM, qui est un
+   langage typé
+10) backend LLVM-friendly
+10) LLVM

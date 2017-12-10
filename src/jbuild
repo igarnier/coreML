@@ -1,0 +1,15 @@
+(jbuild_version 1)
+
+(menhir
+ ((flags (--explain))
+  (modules (parser))))
+
+(ocamllex (lexer))
+
+(executable
+  (
+  (name main)
+  (ocamlopt_flags (-O3))
+  (libraries (batteries))
+  )
+)

@@ -1,0 +1,31 @@
+let x = \x1..xn.A in B ->
+let code_x = \closure.
+  let x1 = field(2,closure) in
+  let x2 = field(3,closure) in
+    ...
+  let xn = field(n+2,closure) in
+    A
+in
+ B
+
+
+f -> 
+  mkclosure sig_of(f) == (index, code_f, arg1, ..., argn)
+
+
+(x y) ->
+  let x = [x] in
+  let y = [y] in
+    apply x y
+
+
+
+apply(x, y) ==
+ match __MAO_field(0, x) with
+ | 0 ->
+     let foo = setfield(x, 2, y) in
+     (_MAO_field(1,x) x)
+ | i -> 
+   let foo = setfield(x, i+2, y) in
+   let foo = setfield(x, 0, i - 1) in
+     x
