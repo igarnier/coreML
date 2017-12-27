@@ -389,23 +389,24 @@ and compile_construct ~cost ~vars ~mat ~fg ~i =
     fg, tree
 
 and compile_tuple ~cost ~vars ~mat ~fg ~i ~arity =
-    let fg, fvs = make_fresh_variables fg arity in
-    let vars    = Vector.kleisli_modify ~vector:vars ~i ~f:(fun _ -> fvs) in
-    let mat     =
-      Matrix.kleisli_map_column ~mat ~i ~f:(fun patt ->
-          match patt.Ast.patt_desc with
-          | Ast.Ptuple patts -> patts
-          | Ast.Pany         -> make_catch_all arity
-          | _ -> failwith "compile_tuple: impossible case reached"
-        )
-    in
-    let fg, tree = compile ~cost ~vars ~mat ~fg  in
-    let tree = UnfoldTuple {
-      tuple_var = Vector.get ~vector:vars ~i;
+  let matched_var = Vector.get ~vector:vars ~i in
+  let fg, fvs = make_fresh_variables fg arity in
+  let vars    = Vector.kleisli_modify ~vector:vars ~i ~f:(fun _ -> fvs) in
+  let mat     =
+    Matrix.kleisli_map_column ~mat ~i ~f:(fun patt ->
+        match patt.Ast.patt_desc with
+        | Ast.Ptuple patts -> patts
+        | Ast.Pany         -> make_catch_all arity
+        | _ -> failwith "compile_tuple: impossible case reached"
+      )
+  in
+  let fg, tree = compile ~cost ~vars ~mat ~fg  in
+  let tree = UnfoldTuple {
+      tuple_var = matched_var;
       tuple_fields = fvs;
       subtree = tree
     } in
-    fg, tree
+  fg, tree
 
 
 (* After pattern matching compilation, we use [tree_to_expr] to convert a
