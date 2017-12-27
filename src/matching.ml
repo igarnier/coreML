@@ -1,108 +1,263 @@
-(* This module handles pattern-matching compilation. The aim is to
-   transform complex pattern-matchings with possibly deeply nested
-   patterns into a simple tree of tests on constructors. *)
+(** This module handles pattern-matching compilation. The aim is to
+    transform complex pattern-matchings with possibly deeply nested
+    patterns into a simple tree of tests on constructors. *)
 
 open Batteries
 
-open Ast
+(** Vectors *)
+module Vector =
+  struct
+    
+    type 'a t = 'a list
 
-(* The pattern matching algorithm works on a matrix of patterns.
-   We use a very inefficient but handy representation of matrices: 
-   lists of lists. *)
-type line   = (Ast.pattern list * Ast.expr) (* patterns * action *)
-type matrix = line list
+    let length vector = List.length vector
 
-(* We will need a way to distinguish between the various patterns.
-   This type is used to this end. *)
-type 'a constructor_kind =
-  | Algebraic of string * 'a
-  | Constant  of Ast.constant
+    let of_list : 'a list -> 'a t = fun x -> x
 
-(* The pattern matching algorithm generates a [tree], wich is
-   itself converted into an expression containing only simple matches. 
-   Note that there is no sharing of identical sub-trees. *)
+    let get : vector:'a t -> i:int -> 'a =
+      fun ~vector ~i ->
+        List.nth vector i
+
+    let modify : vector:'a t -> i:int -> f:('a -> 'a) -> 'a t =
+      fun ~vector ~i ~f ->
+        List.modify_at i f vector
+
+    let set : vector:'a t -> i:int -> elt:'a -> 'a t =
+      fun ~vector ~i ~elt ->
+        modify ~vector ~i ~f:(fun _ -> elt)
+
+    let slice_line l n =
+      let rec aux n acc l =
+        match l with
+        | [] ->
+          failwith "slice_line : line too short."
+        | x :: l'' ->
+          if n = 0 then
+            (List.rev acc, x, l'')
+          else
+            aux (n-1) (x :: acc) l''
+      in aux n [] l
+
+    let kleisli_modify : vector:'a t -> i:int -> f:('a -> 'a t) -> 'a t =
+      fun ~vector ~i ~f ->
+        let prefix, x, suffix = slice_line vector i in
+        List.concat [prefix; f x; suffix]
+
+    let remove : vector:'a t -> i:int -> 'a t =
+      fun ~vector ~i ->
+        List.remove_at i vector
+
+    let fold : vector:'a t -> acc:'b -> f:('b -> 'a -> 'b) -> 'b =
+      fun ~vector ~acc ~f ->
+        List.fold_left f acc vector
+
+    let fold2 : v1:'a t -> v2:'b t -> acc:'c -> f:('c -> 'a -> 'b -> 'c) -> 'c =
+      fun ~v1 ~v2 ~acc ~f ->
+        List.fold_left2 f acc v1 v2
+
+  end
+
+(** Matrices of patterns *)
+module Matrix =
+  struct
+
+    type elt    = Ast.pattern
+    type row    = { patts : elt Vector.t; action : Ast.expr }
+    type matrix = row list
+
+    let is_empty : matrix -> bool =
+      function 
+      | [] -> true
+      | _  -> false
+
+    let get_row : mat:matrix -> i:int -> row  =
+      fun ~mat ~i ->
+        List.nth mat i
+
+    (* let row_to_vector : row:row -> elt Vector.t =
+     *   fun ~row -> row.patts *)
+
+    let get_col : mat:matrix -> i:int -> elt Vector.t =
+      fun ~mat ~i ->
+        List.map (fun row -> Vector.get ~vector:row.patts ~i) mat
+
+    (* let remove_row : mat:matrix -> i:int -> matrix =
+     *   fun ~mat ~i ->
+     *     List.remove_at i mat *)
+        
+    let remove_col : mat:matrix -> i:int -> matrix =
+      fun ~mat ~i ->
+        List.map (fun row -> { row with patts = Vector.remove ~vector:row.patts ~i }) mat
+
+    let filter_rows : mat:matrix -> pred:(elt Vector.t -> bool) -> matrix =
+      fun ~mat ~pred ->
+        List.filter (fun { patts } -> pred patts) mat
+
+    let map_rows : mat:matrix -> f:(row -> row) -> matrix =
+      fun ~mat ~f ->
+        List.map f mat
+
+    let kleisli_map_column : mat:matrix -> i:int -> f:(elt -> elt Vector.t) -> matrix =
+      fun ~mat ~i ~f ->
+        List.map (fun row ->
+            { row with patts = Vector.kleisli_modify ~vector:row.patts ~i ~f }
+          ) mat
+        
+  end
+
+
+(** The pattern matching algorithm generates a [tree], wich is
+    itself converted into an expression containing only simple matches. 
+    Note that there is no explicit sharing of identical sub-trees -- this can be done
+    once thte tree is produced. *)
 type tree =
-  | UnfoldTuple     of Ast.vvar * Ast.vvar list * tree
-  | SwitchConstruct of Ast.vvar * datacons_case list * default_case
-  | SwitchConstant  of { matched_variable : Ast.vvar; 
-                         cases : constant_case list;
-                         default_code : tree option }
-  | Leaf of expr
-and datacons_case = Ast.datacons * Ast.vvar option * tree
-and constant_case = Ast.constant * tree
-and default_case = tree option
+  | UnfoldTuple of { tuple_var    : Ast.vvar;
+                     tuple_fields : Ast.vvar list;
+                     subtree      : tree }
+  | SwitchConstruct of { construct_var : Ast.vvar;
+                         cases : datacons_case list;
+                         deflt : tree option }
+  | SwitchConstant of { constant_var : Ast.vvar;
+                        cases : constant_case list;
+                        deflt : tree option }
+  | Leaf of Ast.expr
+and datacons_case = 
+  { constr : Ast.datacons; 
+    data : Ast.vvar option; 
+    constr_subtree : tree }
+and constant_case = 
+  { cst : Ast.constant; 
+    cst_subtree : tree }
 
-(* We will need various tools to manipulate matrices. *)
 
-(* [slice_line] slices a line [l] into $[l']|[x]|[l'']$ where [x] is the n-th element. 
-   Indices start from 1. *)
-let slice_line l n =
-  let rec aux n acc l =
-    match l with
-    | [] ->
-      failwith "slice_line : line too short."
-    | x :: l'' ->
-      if n = 1 then
-        (List.rev acc, x, l'')
-      else
-        aux (n-1) (x :: acc) l''
-  in aux n [] l
+(** Error raised in case something goes awry *)
+exception MatchingError of string
 
-(* Slice a matrix m into m'|c|m'' where c is the n-th column. *)
-let slice_column m n =
-  let sliced_lines = List.map (fun l -> slice_line l n) m in
-  let m', c, m''    = List.fold_right (fun (l', x, l'') (m', c, m'') ->
-      (l' :: m', x :: c, l'' :: m'')
-    ) sliced_lines ([], [], []) in
-  (m', c, m'')
+let matching_error s = raise (MatchingError s)
 
-(* Merges a left list l', a middle _list_ x and a right list l'' into a single list *)
-let unslice_line l' x l'' = l' @ (x @ l'')
+(** Substitutes all variables in column [col] of [matrix] in the corresponding actions
+    by the variable [Vector.get ~vector:vars ~i:col]. *)
+let subst_variables_of_col ~vars ~mat ~col =
+  let matched_variable = Vector.get ~vector:vars ~i:col in
+  Matrix.map_rows ~mat ~f:(fun row ->
+      let patt = Vector.get ~vector:row.Matrix.patts ~i:col in
+      match patt.Ast.patt_desc with
+      | Ast.Pvar v ->
+        { patts  = Vector.set ~vector:row.Matrix.patts ~i:col ~elt:Ast.P.any;
+          action = Ast.subst v (Ast.Eident { ident = matched_variable }) row.action }
+      | _ -> row
+    )
 
-(* Merges a left matrix m', a middle _matrix_ c and a right matrix m'' into a new matrix *)
-let unslice_column m' c m'' =
-  let sliced_lines = List.combine (List.combine m' c) m'' in
-  List.fold_right (fun ((l', x), l'') m ->
-      (unslice_line l' x l'') :: m
-    ) sliced_lines []
+(** Substitutes all variables in the given [row] by the matching variables in [vars] in
+    the corresponding action. *)
+let subst_variables_of_row ~vars ~row =
+  let patts  = row.Matrix.patts in
+  let action = row.Matrix.action in
+  Vector.fold2
+    ~v1:patts ~v2:vars ~acc:action ~f:(fun action patt var ->
+      match patt.Ast.patt_desc with
+      | Ast.Pvar v ->
+        Ast.subst v (Ast.Eident { ident = var }) action
+      | _ -> action
+    )
 
-(* Removes an element. Indexing starts at 1. *)
-let rec remove_at idx l =
-  if idx = 1 then
-    List.tl l
-  else match l with
-    | [] ->
-      failwith "remove_at : out of list bounds"
-    | x :: l' ->
-      x :: (remove_at (idx - 1) l')
+(** Selects rows that satisfy a predicate on column [col]. *)  
+let filter_by_predicate ~mat ~col ~pred =
+  Matrix.filter_rows ~mat ~pred:(fun row ->
+      let patt = Vector.get ~vector:row ~i:col in
+      pred patt.patt_desc
+    )
 
-let get_column matrix column =
-  let idx = column - 1 in (* List.nth counts from 0 *)
-  List.map (fun (line, _) -> List.nth line idx) matrix
+(** Returns the rows of [mat] such that the patterns on column [i] are 
+    either Pvar or Pany (i.e. catch-all) *)
+let catch_all_submatrix ~mat ~col =
+  filter_by_predicate ~mat ~col ~pred:(function
+      | Ast.Pany   -> true
+      | Ast.Pvar _ -> true
+      | _ -> false
+    )
 
-(* ------------------------------------------------------------ *)
-(* Various functions useful in the match compilation algorithm. *)
+(** Keep all the lines compatible with constant [cst], and substitute
+    variables for catch_all when found. *)
+let simplify_by_constant ~vars ~mat ~col ~cst =
+  let mat =
+    filter_by_predicate ~mat ~col
+      ~pred:(function
+          | Ast.Pany   -> true
+          | Ast.Pvar _ -> true
+          | Ast.Pconst c -> c = cst
+          | _ -> false
+        )
+  in
+  subst_variables_of_col ~vars ~mat ~col
 
-let rec pattern_matches_all { patt_desc } =
-  match patt_desc with
-  | Pany -> true
-  | Pvar _ -> true
-  | Ptuple patts -> false
-  (* List.for_all pattern_matches_all patts *)
-  | _ -> false
+(** Keep all the lines compatible with constructor [constr], and substitute
+    variables for catch-all when found. *)
+let simplify_by_constructor ~vars ~mat ~col ~constr =
+  let mat =
+    filter_by_predicate ~mat ~col
+      ~pred:(function
+          | Ast.Pany   -> true
+          | Ast.Pvar _ -> true
+          | Ast.Pconstruct(c, _) -> c = constr
+          | _ -> false
+        )
+  in
+  subst_variables_of_col ~vars ~mat ~col
 
-(* Returns true iff a line or a column matches everything. *)
-let rec list_matches_all list =
-  List.for_all pattern_matches_all list
+(** Return all constructors of column i. *)
+let constructors_of_column ~mat ~col =
+  let col = Matrix.get_col ~mat ~i:col in
+  Vector.fold ~vector:col ~acc:[] ~f:(fun acc patt ->
+      match patt.Ast.patt_desc with
+      | Ast.Pconstruct(c, patt_opt) -> 
+        if List.mem_assoc c acc then
+          acc
+        else
+          (c, patt_opt) :: acc
+      | _ -> acc
+    )
 
-(* Returns true iff a given column of a matrix matches everything. *)
-let column_matches_all (matrix : matrix) column =
-  list_matches_all (get_column matrix column)
+(** Return all constants of column i. *)
+let constants_of_column ~mat ~col =
+  let col = Matrix.get_col ~mat ~i:col in
+  Vector.fold ~vector:col ~acc:[] ~f:(fun acc patt ->
+      match patt.Ast.patt_desc with
+      | Ast.Pconst c -> 
+        if List.mem c acc then
+          acc
+        else
+          c :: acc
+      | _ -> acc
+    )
 
-(* Makes a list of [length] "Pany", i.e. a line of [length] catch-alls *)
+(** Return [Some] non-trivial pattern of column i, or [None] if there isn't one. *)
+let get_nontrivial_element ~column =
+  Vector.fold ~vector:column ~acc:None ~f:(fun acc patt ->
+      match acc with
+      | None ->
+        (match patt.Ast.patt_desc with
+         | Ast.Pconst _
+         | Ast.Pconstruct(_, _)
+         | Ast.Ptuple _ -> Some patt
+         | _ -> acc)
+      | Some _ -> acc
+    )
+
+(** Returns true if the given line matches everything. *)
+let vector_matches_all vec =
+  Vector.fold ~vector:vec ~acc:true ~f:(fun acc patt ->
+      match patt.Ast.patt_desc with
+      | Ast.Pany
+      | Ast.Pvar _ -> acc
+      | _ -> false
+    )
+
+(** Makes a list of [length] "Pany" *)
 let make_catch_all length =
-  List.make length Ast.mkpany
+  List.make length Ast.P.any
 
+(** Makes a list of [length] fresh variables. *)
 let make_fresh_variables freshgen length =
   let rec mkvars freshgen variables length =
     if length = 0 then
@@ -114,66 +269,213 @@ let make_fresh_variables freshgen length =
   in
   mkvars freshgen [] length
 
-(* Makes a list of [length] fresh variables. *)
-let make_fresh_variables freshgen length =
-  let rec mkvars freshgen variables length =
-    if length = 0 then
-      freshgen, variables
-    else
-      let gen, fresh = Fresh.next freshgen in
-      let v'         = Fresh.var fresh in
-      mkvars gen (v' :: variables) (length - 1)
+(** A generic exploration function, trying to find the element minimizing the [cost]
+    of the given function [f] *)
+let minimize cost_measure compute left right =
+  let indices = List.range left `To right in
+  let (result, _) =
+    List.fold_left (fun ((best_sol, min_cost) as acc) index ->
+        let solution = compute index in
+        let c = cost_measure (snd solution) in
+        if c < min_cost then
+          (Some solution, min_cost)
+        else
+          acc
+      ) (None, max_int) indices
   in
-  mkvars freshgen [] length
+  match result with
+  | Some res -> res
+  | None ->
+    failwith "minimize: empty search space"
+
+
+let rec compile ~cost ~vars ~mat ~fg =
+  let first_line = Matrix.get_row ~mat ~i:0 in
+  let patts      = first_line.Matrix.patts in
+  if vector_matches_all patts then
+    (* The first line matches everything. The first action
+       will thus be executed. Matching compilation ends. *)
+    let action = subst_variables_of_row ~vars ~row:first_line in
+    (fg, Leaf action)
+  else
+    (* There must exist one non-trivial column *)
+    let compile_col i = compile_target_column ~cost ~vars ~mat ~fg ~i in
+    minimize cost compile_col 0 (Vector.length patts - 1)
+
+and compile_target_column ~cost ~vars ~mat ~fg ~i =
+  let column = Matrix.get_col ~mat ~i in
+  if vector_matches_all column then
+    let mat  = subst_variables_of_col ~vars ~mat ~col:i in
+    let mat  = Matrix.remove_col ~mat ~i in
+    let vars = Vector.remove ~vector:vars ~i in
+    compile ~cost ~vars ~mat ~fg
+  else
+    (* The column is non-trivial, there must exist one non-trivial pattern inside *)
+    match get_nontrivial_element ~column with
+    | None ->
+      matching_error "compile_target_column: impossible branch reached"
+    | Some patt ->
+      match patt.Ast.patt_desc with
+      | Ast.Pconst cst ->
+        compile_constant ~cost ~vars ~mat ~fg ~i
+      | Ast.Pconstruct(datacons, opt_patt) ->
+        compile_construct ~cost ~vars ~mat ~fg ~i
+      | Ast.Ptuple patts  ->
+        compile_tuple ~cost ~vars ~mat ~fg ~i ~arity:(List.length patts)
+      | _ ->
+        matching_error "compile_target_column: impossible branch reached"
+
+and compile_constant ~cost ~vars ~mat ~fg ~i =
+  let constants = constants_of_column ~mat ~col:i in
+  let fg, cases =
+    List.fold_left (fun (fg, cases) cst ->
+        let mat  = simplify_by_constant ~vars ~mat ~col:i ~cst in
+        let mat  = Matrix.remove_col ~mat ~i in
+        let vars = Vector.remove ~vector:vars ~i in
+        let fg, tree = compile ~cost ~vars ~mat ~fg in
+        (fg, { cst; cst_subtree = tree } :: cases)
+      ) (fg, []) constants
+  in
+  let default_mat = catch_all_submatrix ~mat ~col:i in
+  if Matrix.is_empty default_mat then
+    let tree = SwitchConstant { constant_var = Vector.get ~vector:vars ~i
+                              ; cases
+                              ; deflt = None } in
+    fg, tree
+  else
+    let fg, default_tree = compile ~cost ~vars ~mat:default_mat ~fg in
+    let tree = SwitchConstant { constant_var = Vector.get ~vector:vars ~i
+                              ; cases
+                              ; deflt = Some default_tree } in
+    fg, tree
+
+and compile_construct ~cost ~vars ~mat ~fg ~i =
+  let constructors = constructors_of_column ~mat ~col:i in
+  let fg, cases =
+    List.fold_left (fun (fg, cases) (constr, patt_opt) ->
+        let mat  = simplify_by_constructor ~vars ~mat ~col:i ~constr in
+        match patt_opt with
+        | None ->
+          let mat  = Matrix.remove_col ~mat ~i in
+          let vars = Vector.remove ~vector:vars ~i in
+          let fg, tree = compile ~cost ~vars ~mat ~fg in
+          (fg, { constr; data = None; constr_subtree = tree } :: cases)
+        | Some patt ->
+          let fg, fresh = Fresh.next fg in
+          let v'        = Fresh.var fresh in
+          let vars      = Vector.set ~vector:vars ~i ~elt:v' in
+          let mat       =
+            Matrix.kleisli_map_column ~mat ~i ~f:(fun patt ->
+                match patt.Ast.patt_desc with
+                | Ast.Pconstruct(cons, Some subpatt) -> Vector.of_list [subpatt]
+                | Ast.Pany -> Vector.of_list [Ast.P.any]
+                | _ -> matching_error "compile_construct: impossible case reached"
+              ) in
+          let fg, tree = compile ~cost ~vars ~mat ~fg in
+          (fg, { constr; data = Some v'; constr_subtree = tree } :: cases)
+      ) (fg, []) constructors
+  in
+  let default_mat = catch_all_submatrix ~mat ~col:i in
+  if Matrix.is_empty default_mat then
+    let tree = SwitchConstruct { construct_var = Vector.get ~vector:vars ~i
+                               ; cases
+                               ; deflt = None } in
+    fg, tree
+  else
+    let fg, default_tree = compile ~cost ~vars ~mat:default_mat ~fg in
+    let tree = SwitchConstruct { construct_var = Vector.get ~vector:vars ~i
+                               ; cases
+                               ; deflt = Some default_tree } in
+    fg, tree
+
+and compile_tuple ~cost ~vars ~mat ~fg ~i ~arity =
+    let fg, fvs = make_fresh_variables fg arity in
+    let vars    = Vector.kleisli_modify ~vector:vars ~i ~f:(fun _ -> fvs) in
+    let mat     =
+      Matrix.kleisli_map_column ~mat ~i ~f:(fun patt ->
+          match patt.Ast.patt_desc with
+          | Ast.Ptuple patts -> patts
+          | Ast.Pany         -> make_catch_all arity
+          | _ -> failwith "compile_tuple: impossible case reached"
+        )
+    in
+    let fg, tree = compile ~cost ~vars ~mat ~fg  in
+    let tree = UnfoldTuple {
+      tuple_var = Vector.get ~vector:vars ~i;
+      tuple_fields = fvs;
+      subtree = tree
+    } in
+    fg, tree
+
+
+(* After pattern matching compilation, we use [tree_to_expr] to convert a
+   test tree back into a now simple match construct. *)
+let rec tree_to_expr tree =
+  match tree with
+  | UnfoldTuple { tuple_var; tuple_fields; subtree } ->
+    let open Ast in
+    let pattvars = List.map P.var tuple_fields in
+    let patts    = P.tpl pattvars in
+    E.mtch (E.id tuple_var) [patts |-> (tree_to_expr subtree)]
+
+  | SwitchConstruct { construct_var; cases; deflt } ->
+    let open Ast in
+     let cases =
+       List.map
+         (fun { constr; data; constr_subtree } ->
+            match data with
+            | None ->
+              (P.cns0 constr) |-> (tree_to_expr constr_subtree)
+            | Some v ->
+              (P.cns1 constr (P.var v)) |-> (tree_to_expr constr_subtree)
+         ) cases 
+     in
+    let cases = 
+      match deflt with
+      | None -> cases
+      | Some tree ->
+        cases @ [ P.any |-> (tree_to_expr tree) ]
+    in
+    E.mtch (E.id construct_var) cases
+
+  | SwitchConstant { constant_var; cases; deflt } ->
+    let open Ast in
+    let cases = List.map (fun { cst; cst_subtree } ->
+        P.cst cst |-> (tree_to_expr cst_subtree)
+      ) cases
+    in
+    let cases = match deflt with
+      | None -> cases
+      | Some tree ->
+        cases @ [ P.any |-> (tree_to_expr tree) ]
+    in
+    E.mtch (E.id constant_var) cases
+
+  | Leaf e -> e
 
 let rec test_count tree =
   match tree with
-  | UnfoldTuple(_, _, tr) ->
-    (test_count tr)
-  | SwitchConstruct(_, cases, default) ->
-    let res = List.fold_left (fun count (_, _, tr) ->
-        (test_count tr) + count
+  | UnfoldTuple { subtree } ->
+    (test_count subtree)
+  | SwitchConstruct { cases; deflt } ->
+    let res = List.fold_left (fun count { constr_subtree } ->
+        (test_count constr_subtree) + count
       ) 1 cases in
-    (match default with
+    (match deflt with
      | None -> res
      | Some tr ->
        res + (test_count tr))
-  | SwitchConstant { cases; default_code } ->
-    let res = List.fold_left (fun count (_, tr) ->
-        (test_count tr) + count
+  | SwitchConstant { cases; deflt } ->
+    let res = List.fold_left (fun count { cst_subtree } ->
+        (test_count cst_subtree) + count
       ) 1 cases in
-    (match default_code with
+    (match deflt with
      | None -> res
      | Some tr ->
        res + (test_count tr))
   | Leaf _ -> 0
 
-let cost_measure = test_count
 
-(* [backtrack_minimize compute cost left right] is used
-   to decide which column to split. Columns are numbered
-   and their indices run in the interval [left;right].
-   The [compute] function embodies the search.
-   Given a column index, it returns either None (e.g. 
-   the column does not yield any split) or Some solution.
-*)
-let backtrack_minimize : (int -> 'a option) -> ('a -> int) -> int -> int -> 'a option =
-  fun compute cost_measure left right ->
-    let indices = List.range left `To right in
-    let (result, _) =
-      List.fold_left (fun ((best_sol, min_cost) as acc) index ->
-          let solution = compute index in
-          match solution with
-          | None     -> acc
-          | Some sol ->
-            let c = cost_measure sol in
-            if c < min_cost then
-              (solution, min_cost)
-            else
-              acc
-        ) (None, max_int) indices
-    in
-    result
 
 
 (* The match compilation algorithm is functorized. *)
@@ -182,7 +484,7 @@ module type InputSig =
 sig
 
   (* [sig_of x] returns the list of all constructors defined along [x],
-   * including [x]. *)
+     including [x]. *)
   val sig_of : Ast.datacons -> Ast.datacons list
 
 end
@@ -192,311 +494,13 @@ module Make(I : InputSig)
 =
 struct
 
-  (* Simplify a matrix knowing that on [column] of [matrix],
-   * the matched term is equal to [constant].  *)
-  let simplify_constant matched_variable constant column matrix =
-    List.fold_right (fun (line, action) new_matrix ->
-        let l', { patt_desc }, l'' = slice_line line column in
-        match patt_desc with
-        | Pany ->
-          let line = remove_at column line in
-          (line, action) :: new_matrix
-        | Pvar v ->
-          let action = subst v (Eident { ident = matched_variable }) action in
-          let line = remove_at column line in
-          (line, action) :: new_matrix
-        | Pconst c ->
-          if c = constant then
-            let line = remove_at column line in
-            (line, action) :: new_matrix
-          else
-            (* The current line is incompatible with [constant], get rid of it *)
-            new_matrix
-        | Pconstruct(_, _) ->
-          (* The current line is incompatible with [constant], get rid of it *)
-          new_matrix
-        | Ptuple _ ->
-          failwith "badly flattened matrix"
-      ) matrix []
+  open Ast
 
-
-  (* Simplify a matrix knowing that on [column] of [matrix],
-     the matched term is of shape [constructor](..).
-     [arity] is either 0 or 1. *)
-  let simplify_algebraic matched_variable constructor arity column matrix =
-    List.fold_right (fun (line, action) new_matrix ->
-        let l', { patt_desc }, l'' = slice_line line column in
-        match patt_desc with
-        | Pany ->
-          let catch_all = make_catch_all arity in
-          let line = unslice_line l' catch_all l'' in
-          (line, action) :: new_matrix
-        | Pvar v ->      
-          let action = subst v (Eident { ident = matched_variable }) action in
-          let catch_all = make_catch_all arity in
-          let line = unslice_line l' catch_all l'' in
-          (line, action) :: new_matrix
-        | Pconst _ ->
-          (* Incompatible line. *)
-          new_matrix
-        | Pconstruct(cons, None) ->
-          if cons = constructor then
-            let line = remove_at column line in
-            (line, action) :: new_matrix
-          else
-            (* Incompatible line. *)
-            new_matrix
-        | Pconstruct(cons, Some field) ->
-          if cons = constructor then
-            let line = unslice_line l' [field] l'' in
-            (line, action) :: new_matrix
-          else
-            (* Incompatible line. *)
-            new_matrix
-        | Ptuple _ ->
-          failwith "badly flattened matrix"
-      ) matrix []
-
-
-  (* Simplify a matrix keeping all the lines where the pattern
-     on [column] is a catch-all or a variable. *)
-  let default matched_variable column (matrix : matrix) =
-    List.fold_right (fun (line, action) new_matrix ->
-        let l', { patt_desc }, l'' = slice_line line column in
-        match patt_desc with
-        | Pany ->
-          let line = remove_at column line in
-          (line, action) :: new_matrix
-        | Pvar v ->
-          let action = subst v (Eident { ident = matched_variable }) action in
-          let line = remove_at column line in
-          (line, action) :: new_matrix
-        | Pconst _ 
-        | Pconstruct(_, _) ->
-          new_matrix
-        | Ptuple _ ->
-          failwith "badly flattened matrix"
-      ) matrix []
-
-  
-  let collect_constructors column =
-    List.fold_left (fun acc { patt_desc } ->
-        match patt_desc with
-        | Pany | Pvar _ -> acc
-        | Pconst c ->
-          let cst = Constant c in
-          if List.mem cst acc then
-            acc
-          else
-            cst :: acc
-        | Ptuple _ ->
-          failwith "badly flattened matrix"
-        | Pconstruct(cons, field) ->
-          let arity =
-            if field = None then 0 else 1
-          in
-          let cst = Algebraic(cons, arity) in
-          if List.mem cst acc then
-            acc
-          else
-            cst :: acc
-      ) [] column
-
-  (* Pattern-matching compilation algorithm. 
-     [compile vars matrix freshgen] produces a decision tree. 
-     The tree consists in a hierarchy of
-     actions on these variables: unfold a variable of a product type into
-     fresh sub-variables, switch on constructors or a switch on constants.     
-  *)
-  let rec compile vars (matrix : (Ast.pattern list * Ast.expr) list) freshgen =
-    let first_line, first_action = 
-      match matrix with
-      | [] ->
-        failwith "Empty pattern matrix."
-      | (line, act) :: _ -> 
-        (line, act)
-    in
-    if list_matches_all first_line then
-      (* The first line matches everything. The first action
-         will thus be executed. Matching compilation ends. *)
-      let action = List.fold_left (fun action (var, { patt_desc }) ->
-          match patt_desc with
-          | Pany -> action
-          | Pvar v ->
-            subst v (Eident { ident = var }) action
-          | _ ->
-            failwith "bug in Matching"
-        ) first_action (List.combine vars first_line) 
-      in
-      freshgen, (Leaf action)
-    else
-      (*backtrack_minimize f cost 0 width*)
-      let try_column column_idx =
-        match List.nth first_line (column_idx-1) with
-        | { patt_desc = Ptuple exprs } ->
-          (* Column [column_idx] is a tuple, unfold it *)
-          Some (compile_tuple vars matrix exprs column_idx freshgen)
-        | _ ->
-          compile_target_column vars matrix freshgen column_idx
-      in
-      let cost (_, tree) = cost_measure tree in
-      match backtrack_minimize try_column cost 1 (List.length first_line) with
-      | None ->
-        failwith "no solution found while compiling matching"
-      | Some res ->
-        res
-
-  and compile_target_column vars matrix freshgen column_idx =
-    (* Not a tuple pattern column. 
-     * Get all the constructors used in the column. *)
-    let column = get_column matrix column_idx in
-    if list_matches_all column then
-      (* This column does not discriminate the data. *)
-      None
-    else
-      (* At this stage, the column must contain constants of variants. Collect them. *)
-      let constructors = collect_constructors column in
-      (* Build the switch for the constructors *)
-      let result = 
-        match constructors with
-        | [] -> failwith "no constructors in column"
-        | (Constant _) :: _ ->
-          (* We match on constants. *)
-          let constructors = 
-            List.map (function
-                | Constant const -> const
-                | _ -> failwith "non-constant case in constant match"
-            ) constructors
-          in
-          compile_constant vars matrix constructors column_idx freshgen
-        | _ ->
-          (* We match on an algebraic datatype *)
-          let constructors = 
-            List.map (function 
-                | Algebraic(cons, 0) -> (cons, 0)
-                | Algebraic(cons, 1) -> (cons, 1)
-                | _ -> failwith "non-algebraic case in constant match"
-              ) constructors 
-          in
-          compile_algebraic vars matrix constructors column_idx freshgen
-      in
-      Some result
-
-  and compile_tuple vars matrix fields column_idx freshgen =
-    (* If the chosen column is a tuple pattern, just unfold 
-       the pattern using a dummy match. *)
-    let arity      = List.length fields in
-    let gen, fvs   = make_fresh_variables freshgen arity in
-    let l', x, l'' = slice_line vars column_idx in
-    let vars       = unslice_line l' fvs l'' in
-    let mat, acts  = List.split matrix in
-    let m', c, m'' = slice_column mat column_idx in
-    let new_column = List.map (fun { patt_desc } ->
-        match patt_desc with
-        | Ptuple fields -> 
-          fields
-        | Pany ->
-          make_catch_all arity
-        | _ -> failwith "Matching is not well-typed."
-      ) c in
-    let columns   = unslice_column m' new_column m'' in
-    let matrix    = List.combine columns acts in
-    let gen, code = compile vars matrix gen in
-    let code      = UnfoldTuple(x, fvs, code) in
-    gen, code
-
-  and compile_constant vars matrix constants column_idx freshgen =
-    let l', matched_variable, l'' = slice_line vars column_idx in
-    let vars = unslice_line l' [] l'' in
-    let default_matrix = default matched_variable column_idx matrix in
-    let freshgen, default_code = 
-      match default_matrix with
-      | [] -> (* Empty default matrix, no default branch *)
-        freshgen, None
-      | _ ->
-        let freshgen, result = compile vars default_matrix freshgen in
-        freshgen, (Some result)
-    in
-    let freshgen, cases = 
-      List.fold_left (fun (freshgen, cases) const ->
-          let matrix    = simplify_constant matched_variable const column_idx matrix in
-          let gen, code = compile vars matrix freshgen in
-          (gen, (const, code) :: cases)
-        ) (freshgen, []) constants
-    in
-    let code = SwitchConstant { matched_variable; cases; default_code } in
-    freshgen, code
-
-  and compile_algebraic vars matrix constructors column_idx freshgen =
-    let l', matched_variable, l'' = slice_line vars column_idx in
-    let vars = unslice_line l' [] l'' in
-    let default_matrix = default matched_variable column_idx matrix in
-    let freshgen, default_code = match default_matrix with
-      | [] -> (* Empty default matrix, no default branch *)
-        freshgen, None
-      | _ ->
-        let freshgen, result = compile vars default_matrix freshgen in
-        freshgen, (Some result)
-    in
-    let freshgen, cases = 
-      List.fold_left (fun (freshgen, cases) (cons, arity) ->
-          if arity = 0 then
-            let matrix    = simplify_algebraic matched_variable cons 0 column_idx matrix in
-            let gen, code = compile vars matrix freshgen in
-            (gen, (cons, None, code) :: cases)
-          else
-            (* arity = 1 *)
-            let matrix     = simplify_algebraic matched_variable cons 1 column_idx matrix in
-            let gen, fresh = Fresh.next freshgen in
-            let v'         = Fresh.var fresh in
-            let vars       = unslice_line l' [v'] l'' in
-            let gen, code  = compile vars matrix gen in
-            (gen, (cons, (Some v'), code) :: cases)
-        ) (freshgen, []) constructors
-    in
-    let code = SwitchConstruct(matched_variable, cases, default_code) in
-    freshgen, code
-
-
-  (* After pattern matching compilation, we use [tree_to_expr] to convert a
-     test tree back into a now simple match construct. *)
-  let rec tree_to_expr tree =
-    match tree with
-    | UnfoldTuple(var, tuplevars, subnode) ->
-      let pattvars = List.map Ast.mkpvar tuplevars in
-      let patts    = mkptuple pattvars in
-      mkmatch (mkident var)
-        [ { rpatt = patts; rexpr = tree_to_expr subnode } ]
-    | SwitchConstruct(var, cases, default) ->
-      let cases = List.map (fun (datacons, content, action) ->
-          match content with
-           | None ->
-             { rpatt = mkpconstruct datacons None; rexpr = tree_to_expr action }
-           | Some v ->
-             { rpatt = mkpconstruct datacons (Some (mkpvar v)); rexpr = tree_to_expr action }
-        ) cases 
-      in
-      let cases = match default with
-        | None -> cases
-        | Some code ->
-          cases @ [{ rpatt = mkpany; rexpr = tree_to_expr code }]
-      in
-      mkmatch (mkident var) cases
-    | SwitchConstant { matched_variable; cases; default_code } ->
-      let cases = List.map (fun (constant, action) ->
-          { rpatt = mkpconst constant; rexpr = tree_to_expr action }
-        ) cases in
-      let cases = match default_code with
-        | None -> cases
-        | Some code ->
-          cases @ [ { rpatt = mkpany; rexpr = tree_to_expr code } ]
-      in
-      mkmatch (mkident matched_variable) cases
-    | Leaf e -> e
+  let compile = compile ~cost:test_count
 
   let rec matching_to_matrix matching =
-    List.map (fun { rpatt; rexpr } -> ([rpatt], rexpr)) matching
-
+    List.map (fun { rpatt; rexpr } -> { Matrix.patts = Vector.of_list [rpatt]; action = rexpr }) matching
+      
   let rec compile_matching matched_expr matching fg =
     match matched_expr.expr_desc with
     | Eident { ident } ->
