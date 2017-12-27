@@ -7,7 +7,7 @@ Compiler passes (in no particular order):
 * parsing (using menhir)
 * alpha-conversion
 * polymorphic type inference
-* pattern matching compilation (in the process of being cleaned up)
+* pattern matching compilation
 * lambda lifting
 * a simple big-step evaluator
 
