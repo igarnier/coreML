@@ -11,5 +11,6 @@
   (name main)
   (ocamlopt_flags (-O3))
   (libraries (batteries))
+  (modes      (byte))
   )
 )

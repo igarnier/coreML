@@ -14,7 +14,7 @@
    The compiler itself is written in a pure, call-by-value subset of OCaml.
 
    A program is structured as a list of type definitions, in the style
-   of Caml, followed by a possibly empty list of value definitions, and ending
+   of OCaml, followed by a possibly empty list of value definitions, and ending
    with a [main] expression. During parsing (cf. [Parsing]), all these definitions are
    collapsed into one big expression. The types and terms are in first-order
    representation, care must be taken to alpha-convert them before playing with
