@@ -457,7 +457,7 @@ let type_pattern ~state ~patt ~expected ~subconstraint =
   type_patt ~subconstraint ~patt ~expected
 
 
-  (* [binding_to_constraint] handles \textbf{let}-bindings. [inject_c]
+(* [binding_to_constraint] handles \textbf{let}-bindings. [inject_c]
      is the constraint of the body of the let. *)
 
 let rec binding_to_constraint ~state ~binder ~(bound : Ast.expr) ~body_c =

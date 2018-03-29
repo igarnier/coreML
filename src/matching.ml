@@ -6,104 +6,104 @@ open Batteries
 
 (** Vectors *)
 module Vector =
-  struct
-    
-    type 'a t = 'a list
+struct
 
-    let length vector = List.length vector
+  type 'a t = 'a list
 
-    let of_list : 'a list -> 'a t = fun x -> x
+  let length vector = List.length vector
 
-    let get : vector:'a t -> i:int -> 'a =
-      fun ~vector ~i ->
-        List.nth vector i
+  let of_list : 'a list -> 'a t = fun x -> x
 
-    let modify : vector:'a t -> i:int -> f:('a -> 'a) -> 'a t =
-      fun ~vector ~i ~f ->
-        List.modify_at i f vector
+  let get : vector:'a t -> i:int -> 'a =
+    fun ~vector ~i ->
+      List.nth vector i
 
-    let set : vector:'a t -> i:int -> elt:'a -> 'a t =
-      fun ~vector ~i ~elt ->
-        modify ~vector ~i ~f:(fun _ -> elt)
+  let modify : vector:'a t -> i:int -> f:('a -> 'a) -> 'a t =
+    fun ~vector ~i ~f ->
+      List.modify_at i f vector
 
-    let slice_line l n =
-      let rec aux n acc l =
-        match l with
-        | [] ->
-          failwith "slice_line : line too short."
-        | x :: l'' ->
-          if n = 0 then
-            (List.rev acc, x, l'')
-          else
-            aux (n-1) (x :: acc) l''
-      in aux n [] l
+  let set : vector:'a t -> i:int -> elt:'a -> 'a t =
+    fun ~vector ~i ~elt ->
+      modify ~vector ~i ~f:(fun _ -> elt)
 
-    let kleisli_modify : vector:'a t -> i:int -> f:('a -> 'a t) -> 'a t =
-      fun ~vector ~i ~f ->
-        let prefix, x, suffix = slice_line vector i in
-        List.concat [prefix; f x; suffix]
+  let slice_line l n =
+    let rec aux n acc l =
+      match l with
+      | [] ->
+        failwith "slice_line : line too short."
+      | x :: l'' ->
+        if n = 0 then
+          (List.rev acc, x, l'')
+        else
+          aux (n-1) (x :: acc) l''
+    in aux n [] l
 
-    let remove : vector:'a t -> i:int -> 'a t =
-      fun ~vector ~i ->
-        List.remove_at i vector
+  let kleisli_modify : vector:'a t -> i:int -> f:('a -> 'a t) -> 'a t =
+    fun ~vector ~i ~f ->
+      let prefix, x, suffix = slice_line vector i in
+      List.concat [prefix; f x; suffix]
 
-    let fold : vector:'a t -> acc:'b -> f:('b -> 'a -> 'b) -> 'b =
-      fun ~vector ~acc ~f ->
-        List.fold_left f acc vector
+  let remove : vector:'a t -> i:int -> 'a t =
+    fun ~vector ~i ->
+      List.remove_at i vector
 
-    let fold2 : v1:'a t -> v2:'b t -> acc:'c -> f:('c -> 'a -> 'b -> 'c) -> 'c =
-      fun ~v1 ~v2 ~acc ~f ->
-        List.fold_left2 f acc v1 v2
+  let fold : vector:'a t -> acc:'b -> f:('b -> 'a -> 'b) -> 'b =
+    fun ~vector ~acc ~f ->
+      List.fold_left f acc vector
 
-  end
+  let fold2 : v1:'a t -> v2:'b t -> acc:'c -> f:('c -> 'a -> 'b -> 'c) -> 'c =
+    fun ~v1 ~v2 ~acc ~f ->
+      List.fold_left2 f acc v1 v2
+
+end
 
 (** Matrices of patterns *)
 module Matrix =
-  struct
+struct
 
-    type elt    = Ast.pattern
-    type row    = { patts : elt Vector.t; action : Ast.expr }
-    type matrix = row list
+  type elt    = Ast.pattern
+  type row    = { patts : elt Vector.t; action : Ast.expr }
+  type matrix = row list
 
-    let is_empty : matrix -> bool =
-      function 
-      | [] -> true
-      | _  -> false
+  let is_empty : matrix -> bool =
+    function 
+    | [] -> true
+    | _  -> false
 
-    let get_row : mat:matrix -> i:int -> row  =
-      fun ~mat ~i ->
-        List.nth mat i
+  let get_row : mat:matrix -> i:int -> row  =
+    fun ~mat ~i ->
+      List.nth mat i
 
-    (* let row_to_vector : row:row -> elt Vector.t =
-     *   fun ~row -> row.patts *)
+  (* let row_to_vector : row:row -> elt Vector.t =
+   *   fun ~row -> row.patts *)
 
-    let get_col : mat:matrix -> i:int -> elt Vector.t =
-      fun ~mat ~i ->
-        List.map (fun row -> Vector.get ~vector:row.patts ~i) mat
+  let get_col : mat:matrix -> i:int -> elt Vector.t =
+    fun ~mat ~i ->
+      List.map (fun row -> Vector.get ~vector:row.patts ~i) mat
 
-    (* let remove_row : mat:matrix -> i:int -> matrix =
-     *   fun ~mat ~i ->
-     *     List.remove_at i mat *)
-        
-    let remove_col : mat:matrix -> i:int -> matrix =
-      fun ~mat ~i ->
-        List.map (fun row -> { row with patts = Vector.remove ~vector:row.patts ~i }) mat
+  (* let remove_row : mat:matrix -> i:int -> matrix =
+   *   fun ~mat ~i ->
+   *     List.remove_at i mat *)
 
-    let filter_rows : mat:matrix -> pred:(elt Vector.t -> bool) -> matrix =
-      fun ~mat ~pred ->
-        List.filter (fun { patts } -> pred patts) mat
+  let remove_col : mat:matrix -> i:int -> matrix =
+    fun ~mat ~i ->
+      List.map (fun row -> { row with patts = Vector.remove ~vector:row.patts ~i }) mat
 
-    let map_rows : mat:matrix -> f:(row -> row) -> matrix =
-      fun ~mat ~f ->
-        List.map f mat
+  let filter_rows : mat:matrix -> pred:(elt Vector.t -> bool) -> matrix =
+    fun ~mat ~pred ->
+      List.filter (fun { patts } -> pred patts) mat
 
-    let kleisli_map_column : mat:matrix -> i:int -> f:(elt -> elt Vector.t) -> matrix =
-      fun ~mat ~i ~f ->
-        List.map (fun row ->
-            { row with patts = Vector.kleisli_modify ~vector:row.patts ~i ~f }
-          ) mat
-        
-  end
+  let map_rows : mat:matrix -> f:(row -> row) -> matrix =
+    fun ~mat ~f ->
+      List.map f mat
+
+  let kleisli_map_column : mat:matrix -> i:int -> f:(elt -> elt Vector.t) -> matrix =
+    fun ~mat ~i ~f ->
+      List.map (fun row ->
+          { row with patts = Vector.kleisli_modify ~vector:row.patts ~i ~f }
+        ) mat
+
+end
 
 
 (** The pattern matching algorithm generates a [tree], wich is
@@ -155,11 +155,11 @@ let subst_variables_of_row ~vars ~row =
   let action = row.Matrix.action in
   Vector.fold2
     ~v1:patts ~v2:vars ~acc:action ~f:(fun action patt var ->
-      match patt.Ast.patt_desc with
-      | Ast.Pvar v ->
-        Ast.subst v (Ast.Eident { ident = var }) action
-      | _ -> action
-    )
+        match patt.Ast.patt_desc with
+        | Ast.Pvar v ->
+          Ast.subst v (Ast.Eident { ident = var }) action
+        | _ -> action
+      )
 
 (** Selects rows that satisfy a predicate on column [col]. *)  
 let filter_by_predicate ~mat ~col ~pred =
@@ -421,16 +421,16 @@ let rec tree_to_expr tree =
 
   | SwitchConstruct { construct_var; cases; deflt } ->
     let open Ast in
-     let cases =
-       List.map
-         (fun { constr; data; constr_subtree } ->
-            match data with
-            | None ->
-              (P.cns0 constr) |-> (tree_to_expr constr_subtree)
-            | Some v ->
-              (P.cns1 constr (P.var v)) |-> (tree_to_expr constr_subtree)
-         ) cases 
-     in
+    let cases =
+      List.map
+        (fun { constr; data; constr_subtree } ->
+           match data with
+           | None ->
+             (P.cns0 constr) |-> (tree_to_expr constr_subtree)
+           | Some v ->
+             (P.cns1 constr (P.var v)) |-> (tree_to_expr constr_subtree)
+        ) cases 
+    in
     let cases = 
       match deflt with
       | None -> cases
@@ -501,7 +501,7 @@ struct
 
   let rec matching_to_matrix matching =
     List.map (fun { rpatt; rexpr } -> { Matrix.patts = Vector.of_list [rpatt]; action = rexpr }) matching
-      
+
   let rec compile_matching matched_expr matching fg =
     match matched_expr.expr_desc with
     | Eident { ident } ->
